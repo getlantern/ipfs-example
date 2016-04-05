@@ -8,7 +8,7 @@ import (
 	fsrepo "github.com/ipfs/go-ipfs/repo/fsrepo"
 	logging "gx/ipfs/Qmazh5oNUVsDZTs2g59rq8aYQqwpss8tcUWQzor5sCCEuH/go-log"
 
-	"code.google.com/p/go.net/context"
+	"golang.org/x/net/context"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	list, err := corenet.Listen(nd, "/app/whyrusleeping")
+	list, err := corenet.Listen(nd, "/app/lantern")
 	if err != nil {
 		panic(err)
 	}
