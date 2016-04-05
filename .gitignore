@@ -1,2 +1,4 @@
 .ipfs-repo-server
 .ipfs-repo-client
+client/client
+server/server

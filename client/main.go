@@ -47,7 +47,7 @@ func main() {
 
 	fmt.Printf("I am peer %s dialing %s\n", nd.Identity, target)
 
-	con, err := corenet.Dial(nd, target, "/app/whyrusleeping")
+	con, err := corenet.Dial(nd, target, "/app/lantern")
 	if err != nil {
 		fmt.Println(err)
 		return
