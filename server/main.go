@@ -2,17 +2,19 @@ package main
 
 import (
 	"fmt"
+	"time"
+
+	//logging "gx/ipfs/Qmazh5oNUVsDZTs2g59rq8aYQqwpss8tcUWQzor5sCCEuH/go-log"
 
 	core "github.com/ipfs/go-ipfs/core"
 	corenet "github.com/ipfs/go-ipfs/core/corenet"
 	fsrepo "github.com/ipfs/go-ipfs/repo/fsrepo"
-	logging "gx/ipfs/Qmazh5oNUVsDZTs2g59rq8aYQqwpss8tcUWQzor5sCCEuH/go-log"
 
 	"golang.org/x/net/context"
 )
 
 func main() {
-	logging.LevelInfo()
+	//logging.LevelInfo()
 	// Basic ipfsnode setup
 	r, err := fsrepo.Open("../.ipfs-repo-server")
 	if err != nil {
@@ -32,23 +34,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	list, err := corenet.Listen(nd, "/app/lantern")
+	_, err = corenet.Listen(nd, "/app/lantern")
+	if err != nil {
+		panic(err)
+	}
+	msg := fmt.Sprintf("%s: Hello! Lantern welcome you to the wonderland of IPFS\n", time.Now())
+	path, _, err := Add(nd, msg, "hello")
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("I am peer: %s\n", nd.Identity.Pretty())
-
-	for {
-		con, err := list.Accept()
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		defer con.Close()
-
-		fmt.Fprintln(con, "Hello! This is whyrusleepings awesome ipfs service")
-		fmt.Printf("Connection from: %s\n", con.Conn().RemotePeer())
-	}
+	fmt.Printf("Hey! I have a message to you at /ipfs/%s\n", path)
+	var ch chan struct{}
+	<-ch
 }
