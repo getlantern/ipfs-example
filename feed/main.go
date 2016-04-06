@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 var (
 	log      = golog.LoggerFor("lantern.everfeed.extractor")
 	url      = flag.String("url", "https://chinadigitaltimes.net/feed/", "")
-	token    = flag.String("token", "6c6ab23583a10bc48c65ca2a1ff78b43", "diffbot token")
+	token    string
 	articles []Article
 )
 
@@ -29,6 +30,13 @@ type Article struct {
 	Text  string
 	Title string
 	Url   string
+}
+
+func init() {
+	token = os.Getenv("DIFFBOT_TOKEN")
+	if token == "" {
+		log.Fatal("No diffbot token!")
+	}
 }
 
 func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) (string, error) {
@@ -78,7 +86,7 @@ func itemHandler(feed *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
 
 func parseArticle(url string) {
 	opt := &diffbot.Options{Fields: "*"}
-	dArticle, err := diffbot.ParseArticle(*token, url, opt)
+	dArticle, err := diffbot.ParseArticle(token, url, opt)
 	if err != nil {
 		if apiErr, ok := err.(*diffbot.Error); ok {
 			// ApiError, e.g. {"error":"Not authorized API token.","errorCode":401}
