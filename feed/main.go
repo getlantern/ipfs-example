@@ -7,16 +7,14 @@ import (
 	"flag"
 	"io"
 	"io/ioutil"
-	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/diffbot/diffbot-go-client"
 	"github.com/getlantern/golog"
-	"github.com/ipfs/go-ipfs/core"
-	fsrepo "github.com/ipfs/go-ipfs/repo/fsrepo"
+	"github.com/getlantern/ipfs-example/ipfs"
 	rss "github.com/jteeuwen/go-pkg-rss"
 	"github.com/jteeuwen/go-pkg-xmlx"
-	"golang.org/x/net/context"
 )
 
 var (
@@ -33,12 +31,12 @@ type Article struct {
 	Url   string
 }
 
-func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) {
+func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) (string, error) {
 	feed := rss.New(timeout, true, chanHandler, itemHandler)
 
 	if err := feed.Fetch(uri, cr); err != nil {
 		log.Errorf("[e] %s: %s\n", uri, err)
-		return
+		return "", err
 	}
 
 	var buffer bytes.Buffer        // Stand-in for a network connection
@@ -52,30 +50,15 @@ func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) {
 	log.Debugf("Bytes is %v", buffer.Bytes())
 	dir, err := ioutil.TempDir("", "lantern")
 	if err != nil {
-		log.Fatalf("Could not write tmp file: %v", err)
-		return
+		log.Errorf("Could not write tmp file: %v", err)
+		return "", err
 	}
 
 	tmpfn := filepath.Join(dir, "feed")
 	if err := ioutil.WriteFile(tmpfn, buffer.Bytes(), 0666); err != nil {
-		log.Fatal(err)
+		return "", err
 	}
-
-	addToIpfs(tmpfn)
-}
-
-func addToIpfs(file string) {
-	log.Debugf("File path is %s", file)
-	cmd := exec.Command("ipfs", "add", file)
-
-	err := cmd.Start()
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Debugf("Waiting for command to finish...")
-	err = cmd.Wait()
-	log.Debugf("Command finished with error: %v", err)
-
+	return tmpfn, nil
 }
 
 func chanHandler(feed *rss.Feed, newchannels []*rss.Channel) {
@@ -132,33 +115,38 @@ func charsetReader(charset string, r io.Reader) (io.Reader, error) {
 	return nil, errors.New("Unsupported character set encoding: " + charset)
 }
 
-func setupIpfs() (*core.IpfsNode, error) {
-	// Assume the user has run 'ipfs init'
-	r, err := fsrepo.Open("~/.ipfs")
-	if err != nil {
-		return nil, err
-	}
-
-	cfg := &core.BuildCfg{
-		Repo:   r,
-		Online: true,
-	}
-
-	return core.NewNode(context.Background(), cfg)
-}
-
 func main() {
 	flag.Parse()
 
-	nd, err := setupIpfs()
+	node, err := ipfs.Start("~/.ipfs")
 	if err != nil {
 		log.Error(err)
 		return
 	}
 
-	log.Debugf("I am peer %s", nd.Identity)
-
 	log.Debugf("Fetching articles from: %s", *url)
+	interval := 1 * time.Minute
+	t := time.NewTimer(0)
+	for {
+		<-t.C
+		t.Reset(interval)
+		fn, err := pollFeed(*url, 5, charsetReader)
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		path, _, err := node.AddFile(fn, "CoolSite")
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		log.Debugf("Added at /ipfs/%s", path)
 
-	pollFeed(*url, 5, charsetReader)
+		ns, err := node.Publish(path)
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		log.Debugf("Published to /ipns/%s", ns)
+	}
 }
