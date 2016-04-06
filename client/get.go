@@ -10,21 +10,21 @@ import (
 	"golang.org/x/net/context"
 )
 
-func Get(node *core.IpfsNode, ctx context.Context, pt string) string {
+func get(node *core.IpfsNode, ctx context.Context, pt string) (string, error) {
 	p := path.Path(pt)
 	dn, err := core.Resolve(ctx, node, p)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 
 	reader, err := uio.NewDagReader(ctx, dn, node.DAG)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 	var buf bytes.Buffer
 	_, err = io.Copy(&buf, reader)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-	return buf.String()
+	return buf.String(), nil
 }

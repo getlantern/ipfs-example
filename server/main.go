@@ -38,13 +38,24 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	msg := fmt.Sprintf("%s: Hello! Lantern welcome you to the wonderland of IPFS\n", time.Now())
-	path, _, err := Add(nd, msg, "hello")
-	if err != nil {
-		panic(err)
-	}
+	interval := 10 * time.Second
+	t := time.NewTimer(0)
+	for i := 1; ; i++ {
+		<-t.C
+		msg := fmt.Sprintf("Message %d: Welcome to the wonderland of IPFS\n", i)
+		path, _, err := Add(nd, msg, "hello")
+		if err != nil {
+			panic(err)
+		}
 
-	fmt.Printf("Hey! I have a message to you at /ipfs/%s\n", path)
-	var ch chan struct{}
-	<-ch
+		fmt.Printf("%d: Hey! I have a message to you at /ipfs/%s\n", i, path)
+
+		ns, err := publish(ctx, nd, path)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Also available at permanent link /ipns/%s\n", ns)
+		fmt.Println("***")
+		t.Reset(interval)
+	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	//logging "gx/ipfs/Qmazh5oNUVsDZTs2g59rq8aYQqwpss8tcUWQzor5sCCEuH/go-log"
 
@@ -39,6 +40,22 @@ func main() {
 	}
 
 	path := os.Args[1]
-	s := Get(nd, ctx, path)
-	fmt.Printf("Hello at %s: %s\n", path, s)
+	interval := 10 * time.Second
+	t := time.NewTimer(0)
+	for {
+		<-t.C
+		t.Reset(interval)
+		realPath, err := resolve(nd, ctx, path)
+		if err != nil {
+			fmt.Printf("resolve: %s\n", err)
+			continue
+		}
+		fmt.Printf("Real path for %s: %s\n", path, realPath)
+		s, err := get(nd, ctx, realPath)
+		if err != nil {
+			fmt.Printf("get: %s\n", err)
+			continue
+		}
+		fmt.Println(s)
+	}
 }
