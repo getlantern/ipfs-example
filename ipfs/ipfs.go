@@ -15,18 +15,28 @@ import (
 	"github.com/ipfs/go-ipfs/repo/fsrepo"
 	uio "github.com/ipfs/go-ipfs/unixfs/io"
 	"golang.org/x/net/context"
+	crypto "gx/ipfs/QmSN2ELGRp4T9kjqiSsSNJRUeR9JKXzQEgwe1HH3tdSGbC/go-libp2p/p2p/crypto"
 )
 
 type IpfsNode struct {
 	node   *core.IpfsNode
+	pk     crypto.PrivKey
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-func Start(repoDir string) (*IpfsNode, error) {
+func Start(repoDir string, pkfile string) (*IpfsNode, error) {
 	r, err := fsrepo.Open(repoDir)
 	if err != nil {
 		return nil, err
+	}
+
+	var pk crypto.PrivKey
+	if pkfile != "" {
+		pk, err = GenKeyIfNotExists(pkfile)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -45,7 +55,7 @@ func Start(repoDir string) (*IpfsNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &IpfsNode{nd, ctx, cancel}, nil
+	return &IpfsNode{nd, pk, ctx, cancel}, nil
 }
 
 func (node *IpfsNode) Stop() {
@@ -86,6 +96,9 @@ func (node *IpfsNode) Get(pt string) (string, error) {
 func (node *IpfsNode) Publish(p string) (string, error) {
 	ref := path.Path(p)
 	k := node.node.PrivateKey
+	if node.pk != nil {
+		k = node.pk
+	}
 	err := node.node.Namesys.Publish(node.ctx, k, ref)
 	if err != nil {
 		return "", err

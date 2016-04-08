@@ -16,7 +16,7 @@ func main() {
 		fmt.Println("Please give IPFS path")
 		return
 	}
-	node, err := ipfs.Start("../.ipfs-repo-client")
+	node, err := ipfs.Start("../.ipfs-repo-client", "")
 	if err != nil {
 		panic(err)
 	}
