@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/gob"
+	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"io/ioutil"
 	"os"
@@ -19,34 +19,66 @@ import (
 )
 
 var (
-	log      = golog.LoggerFor("lantern.everfeed.extractor")
-	url      = flag.String("url", "https://chinadigitaltimes.net/feed/", "")
-	token    string
-	articles []Article
+	log   = golog.LoggerFor("lantern.everfeed.extractor")
+	node  *ipfs.IpfsNode
+	token string
+
+	feeds = []*Feed{
+		&Feed{Name: "BBC", Url: "http://www.bbc.com/zhongwen/simp/indepth/cluster_panama_papers/index.xml"},
+		/*&Feed{Name: "China Digital Times", Url: "https://chinadigitaltimes.net/feed/"},
+		&Feed{Name: "Solidot", Url: "http://solidot.org.feedsportal.com/c/33236/f/556826/index.rss"},
+		&Feed{Name: "Boxun", Url: "http://www.boxun.com/news/rss/focus.xml"},
+		&Feed{Name: "NYTimes", Url: "http://cn.nytimes.com/rss.html"},*/
+	}
+
+	timeout = 5
 )
 
 type Article struct {
-	Image string
-	Text  string
-	Title string
-	Url   string
+	Image       string
+	Description string
+	Title       string
+	Url         string
+}
+
+type Feed struct {
+	Name string
+	Url  string
 }
 
 func init() {
+	var err error
+
 	token = os.Getenv("DIFFBOT_TOKEN")
 	if token == "" {
 		log.Fatal("No diffbot token!")
 	}
+
+	node, err = ipfs.Start("~/.ipfs")
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
-func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) (string, error) {
-	feed := rss.New(timeout, true, chanHandler, itemHandler)
+func syncFeeds() {
+
+	for _, feed := range feeds {
+		go pollFeed(feed.Url, timeout, charsetReader)
+	}
+}
+
+func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) error {
+	feed := rss.New(timeout, true, nil, itemHandler)
 
 	if err := feed.Fetch(uri, cr); err != nil {
 		log.Errorf("[e] %s: %s\n", uri, err)
-		return "", err
+		return err
 	}
 
+	return nil
+}
+
+func encodeFeed(articles []Article) (string, error) {
 	var buffer bytes.Buffer        // Stand-in for a network connection
 	enc := gob.NewEncoder(&buffer) // Will write to network.
 
@@ -55,7 +87,18 @@ func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) (string, error) {
 		log.Fatalf("Encode error: %v", err)
 	}
 
-	log.Debugf("Bytes is %v", buffer.Bytes())
+	return createTempFile(buffer.Bytes())
+}
+
+func encodeFeedJson(articles []Article) (string, error) {
+	b, err := json.Marshal(articles)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return createTempFile(b)
+}
+
+func createTempFile(bytes []byte) (string, error) {
 	dir, err := ioutil.TempDir("", "lantern")
 	if err != nil {
 		log.Errorf("Could not write tmp file: %v", err)
@@ -63,42 +106,75 @@ func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) (string, error) {
 	}
 
 	tmpfn := filepath.Join(dir, "feed")
-	if err := ioutil.WriteFile(tmpfn, buffer.Bytes(), 0666); err != nil {
+	if err := ioutil.WriteFile(tmpfn, bytes, 0666); err != nil {
 		return "", err
 	}
 	return tmpfn, nil
 }
 
-func chanHandler(feed *rss.Feed, newchannels []*rss.Channel) {
-}
-
 func itemHandler(feed *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
 	log.Debugf("%d new item(s) in %s\n", len(newitems), feed.Url)
 
-	for i := 0; i < len(newitems) && i <= 3; i++ {
+	var articles []Article
+
+	for i := 0; i < len(newitems) && i < 10; i++ {
 		item := newitems[i]
 		link := item.Links[0]
 		if link != nil && link.Href != "" {
-			parseArticle(link.Href)
+			article, err := parseArticle(link.Href)
+			if err != nil {
+				log.Errorf("Could not parse article: %v", err)
+			} else {
+				printArticle(article)
+				if article.Title != "" {
+					articles = append(articles, *article)
+				}
+			}
 		}
 	}
+
+	log.Debugf("Number of articles: %d", len(articles))
+
+	fn, err := encodeFeedJson(articles)
+	if err != nil {
+		log.Errorf("Error encoding feed: %v", err)
+		return
+	}
+
+	path, _, err := node.AddFile(fn, "CoolSite")
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	log.Debugf("Added feed %s at /ipfs/%s", feed.Url, path)
+
+	ns, err := node.Publish(path)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	log.Debugf("Published to /ipns/%s", ns)
 }
 
-func parseArticle(url string) {
+func parseArticle(url string) (*Article, error) {
 	opt := &diffbot.Options{Fields: "*"}
 	dArticle, err := diffbot.ParseArticle(token, url, opt)
 	if err != nil {
 		if apiErr, ok := err.(*diffbot.Error); ok {
 			// ApiError, e.g. {"error":"Not authorized API token.","errorCode":401}
 			log.Error(apiErr)
+			return nil, apiErr
 		}
 		log.Error(err)
+		return nil, err
 	}
 
-	article := Article{
-		Title: dArticle.Title,
-		Url:   dArticle.Url,
-		Text:  dArticle.Text,
+	log.Debugf("DIFFBOT ARTICLE: %v", dArticle.Meta)
+
+	article := &Article{
+		Title:       dArticle.Title,
+		Url:         dArticle.Url,
+		Description: dArticle.Meta["description"].(string),
 	}
 	for _, img := range dArticle.Images {
 		if img.Primary == "true" {
@@ -106,14 +182,13 @@ func parseArticle(url string) {
 			break
 		}
 	}
-	articles = append(articles, article)
-	printArticle(article)
+	return article, nil
 }
 
-func printArticle(article Article) {
+func printArticle(article *Article) {
 	log.Debugf("URL: %s TITLE: %s TEXT: %s IMAGE: %s",
 		article.Url, article.Title,
-		article.Text, article.Image)
+		article.Description, article.Image)
 }
 
 func charsetReader(charset string, r io.Reader) (io.Reader, error) {
@@ -124,37 +199,12 @@ func charsetReader(charset string, r io.Reader) (io.Reader, error) {
 }
 
 func main() {
-	flag.Parse()
 
-	node, err := ipfs.Start("~/.ipfs")
-	if err != nil {
-		log.Error(err)
-		return
-	}
-
-	log.Debugf("Fetching articles from: %s", *url)
-	interval := 1 * time.Minute
+	interval := 10 * time.Minute
 	t := time.NewTimer(0)
 	for {
 		<-t.C
 		t.Reset(interval)
-		fn, err := pollFeed(*url, 5, charsetReader)
-		if err != nil {
-			log.Error(err)
-			return
-		}
-		path, _, err := node.AddFile(fn, "CoolSite")
-		if err != nil {
-			log.Error(err)
-			return
-		}
-		log.Debugf("Added at /ipfs/%s", path)
-
-		ns, err := node.Publish(path)
-		if err != nil {
-			log.Error(err)
-			return
-		}
-		log.Debugf("Published to /ipns/%s", ns)
+		syncFeeds()
 	}
 }
