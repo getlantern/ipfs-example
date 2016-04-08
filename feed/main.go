@@ -124,10 +124,12 @@ func charsetReader(charset string, r io.Reader) (io.Reader, error) {
 	return nil, errors.New("Unsupported character set encoding: " + charset)
 }
 
+var pk = flag.String("pkfile", "", "Private key file to publish contents")
+
 func main() {
 	flag.Parse()
 
-	node, err := ipfs.Start("~/.ipfs")
+	node, err := ipfs.Start("~/.ipfs", *pk)
 	if err != nil {
 		log.Error(err)
 		return
