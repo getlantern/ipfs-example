@@ -9,6 +9,8 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/diffbot/diffbot-go-client"
@@ -19,19 +21,24 @@ import (
 )
 
 var (
-	log   = golog.LoggerFor("lantern.everfeed.extractor")
-	node  *ipfs.IpfsNode
-	token string
+	log      = golog.LoggerFor("lantern.everfeed.extractor")
+	node     *ipfs.IpfsNode
+	token    string
+	articles Articles
 
 	feeds = []*Feed{
 		&Feed{Name: "BBC", Url: "http://www.bbc.com/zhongwen/simp/indepth/cluster_panama_papers/index.xml"},
-		/*&Feed{Name: "China Digital Times", Url: "https://chinadigitaltimes.net/feed/"},
-		&Feed{Name: "Solidot", Url: "http://solidot.org.feedsportal.com/c/33236/f/556826/index.rss"},
-		&Feed{Name: "Boxun", Url: "http://www.boxun.com/news/rss/focus.xml"},
-		&Feed{Name: "NYTimes", Url: "http://cn.nytimes.com/rss.html"},*/
+		&Feed{Name: "China Digital Times", Url: "https://chinadigitaltimes.net/feed/"},
 	}
 
-	timeout = 5
+	feedMap = map[string]string{
+		"http://www.bbc.com/zhongwen/simp/indepth/cluster_panama_papers/index.xml": "BBC",
+		"https://theinitium.com/newsfeed/":                                         "The Initium",
+		"https://chinadigitaltimes.net/feed/":                                      "China Digital Times",
+	}
+
+	timeLayout = "Mon Jan 2 15:04:05 MST"
+	timeout    = 5
 )
 
 type Article struct {
@@ -39,6 +46,22 @@ type Article struct {
 	Description string
 	Title       string
 	Url         string
+	Source      string
+	Date        time.Time
+}
+
+type Articles []Article
+
+func (a Articles) Len() int {
+	return len(a)
+}
+
+func (a Articles) Less(i, j int) bool {
+	return a[i].Date.Before(a[j].Date)
+}
+
+func (a Articles) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
 }
 
 type Feed struct {
@@ -61,10 +84,18 @@ func init() {
 }
 
 func syncFeeds() {
+	var wg sync.WaitGroup
+	wg.Add(len(feeds))
 
 	for _, feed := range feeds {
-		go pollFeed(feed.Url, timeout, charsetReader)
+		go func(url string) {
+			defer wg.Done()
+			pollFeed(url, timeout, charsetReader)
+		}(feed.Url)
 	}
+
+	wg.Wait()
+	publishFeed()
 }
 
 func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) error {
@@ -115,13 +146,11 @@ func createTempFile(bytes []byte) (string, error) {
 func itemHandler(feed *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
 	log.Debugf("%d new item(s) in %s\n", len(newitems), feed.Url)
 
-	var articles []Article
-
 	for i := 0; i < len(newitems) && i < 10; i++ {
 		item := newitems[i]
 		link := item.Links[0]
 		if link != nil && link.Href != "" {
-			article, err := parseArticle(link.Href)
+			article, err := parseArticle(ch.Title, link.Href)
 			if err != nil {
 				log.Errorf("Could not parse article: %v", err)
 			} else {
@@ -132,8 +161,11 @@ func itemHandler(feed *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
 			}
 		}
 	}
+}
 
+func publishFeed() {
 	log.Debugf("Number of articles: %d", len(articles))
+	sort.Sort(articles)
 
 	fn, err := encodeFeedJson(articles)
 	if err != nil {
@@ -146,7 +178,7 @@ func itemHandler(feed *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
 		log.Error(err)
 		return
 	}
-	log.Debugf("Added feed %s at /ipfs/%s", feed.Url, path)
+	log.Debugf("Added at /ipfs/%s", path)
 
 	ns, err := node.Publish(path)
 	if err != nil {
@@ -156,7 +188,7 @@ func itemHandler(feed *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
 	log.Debugf("Published to /ipns/%s", ns)
 }
 
-func parseArticle(url string) (*Article, error) {
+func parseArticle(source, url string) (*Article, error) {
 	opt := &diffbot.Options{Fields: "*"}
 	dArticle, err := diffbot.ParseArticle(token, url, opt)
 	if err != nil {
@@ -169,13 +201,23 @@ func parseArticle(url string) (*Article, error) {
 		return nil, err
 	}
 
-	log.Debugf("DIFFBOT ARTICLE: %v", dArticle.Meta)
+	log.Debugf("DIFFBOT ARTICLE: %v", dArticle)
 
 	article := &Article{
-		Title:       dArticle.Title,
-		Url:         dArticle.Url,
-		Description: dArticle.Meta["description"].(string),
+		Title:  dArticle.Title,
+		Url:    dArticle.Url,
+		Source: source,
 	}
+
+	t, err := time.Parse(dArticle.Date, timeLayout)
+	if err != nil {
+		article.Date = t
+	}
+
+	if desc := dArticle.Meta["description"]; desc != nil {
+		article.Description = desc.(string)
+	}
+
 	for _, img := range dArticle.Images {
 		if img.Primary == "true" {
 			article.Image = img.Url
