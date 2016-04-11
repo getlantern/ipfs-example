@@ -21,14 +21,16 @@ import (
 )
 
 var (
-	log      = golog.LoggerFor("lantern.everfeed.extractor")
-	node     *ipfs.IpfsNode
-	token    string
-	articles Articles
+	log   = golog.LoggerFor("lantern.everfeed.extractor")
+	node  *ipfs.IpfsNode
+	token string
 
-	feeds = []*Feed{
-		&Feed{Name: "BBC", Url: "http://www.bbc.com/zhongwen/simp/indepth/cluster_panama_papers/index.xml"},
-		&Feed{Name: "China Digital Times", Url: "https://chinadigitaltimes.net/feed/"},
+	feed = &Feed{
+		Sources: []*Source{
+			&Source{Name: "BBC", Url: "http://www.bbc.com/zhongwen/simp/indepth/cluster_panama_papers/index.xml"},
+			&Source{Name: "China Digital Times", Url: "https://chinadigitaltimes.net/feed/"},
+		},
+		Items: make(map[string]FeedItems),
 	}
 
 	feedMap = map[string]string{
@@ -41,7 +43,13 @@ var (
 	timeout    = 5
 )
 
-type Article struct {
+type Feed struct {
+	Sources []*Source
+	Items   map[string]FeedItems
+	Full    FeedItems
+}
+
+type FeedItem struct {
 	Image       string
 	Description string
 	Title       string
@@ -50,21 +58,21 @@ type Article struct {
 	Date        time.Time
 }
 
-type Articles []Article
+type FeedItems []FeedItem
 
-func (a Articles) Len() int {
-	return len(a)
+func (f FeedItems) Len() int {
+	return len(f)
 }
 
-func (a Articles) Less(i, j int) bool {
-	return a[i].Date.Before(a[j].Date)
+func (f FeedItems) Less(i, j int) bool {
+	return f[i].Date.Before(f[j].Date)
 }
 
-func (a Articles) Swap(i, j int) {
-	a[i], a[j] = a[j], a[i]
+func (f FeedItems) Swap(i, j int) {
+	f[i], f[j] = f[j], f[i]
 }
 
-type Feed struct {
+type Source struct {
 	Name string
 	Url  string
 }
@@ -81,17 +89,18 @@ func init() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 }
 
 func syncFeeds() {
 	var wg sync.WaitGroup
-	wg.Add(len(feeds))
+	wg.Add(len(feed.Sources))
 
-	for _, feed := range feeds {
+	for _, source := range feed.Sources {
 		go func(url string) {
 			defer wg.Done()
 			pollFeed(url, timeout, charsetReader)
-		}(feed.Url)
+		}(source.Url)
 	}
 
 	wg.Wait()
@@ -99,9 +108,10 @@ func syncFeeds() {
 }
 
 func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) error {
-	feed := rss.New(timeout, true, nil, itemHandler)
 
-	if err := feed.Fetch(uri, cr); err != nil {
+	r := rss.New(timeout, true, nil, itemHandler)
+
+	if err := r.Fetch(uri, cr); err != nil {
 		log.Errorf("[e] %s: %s\n", uri, err)
 		return err
 	}
@@ -109,11 +119,11 @@ func pollFeed(uri string, timeout int, cr xmlx.CharsetFunc) error {
 	return nil
 }
 
-func encodeFeed(articles []Article) (string, error) {
+func encodeFeed(items []FeedItem) (string, error) {
 	var buffer bytes.Buffer        // Stand-in for a network connection
 	enc := gob.NewEncoder(&buffer) // Will write to network.
 
-	err := enc.Encode(articles)
+	err := enc.Encode(items)
 	if err != nil {
 		log.Fatalf("Encode error: %v", err)
 	}
@@ -121,8 +131,9 @@ func encodeFeed(articles []Article) (string, error) {
 	return createTempFile(buffer.Bytes())
 }
 
-func encodeFeedJson(articles []Article) (string, error) {
-	b, err := json.Marshal(articles)
+func encodeFeedJson() (string, error) {
+
+	b, err := json.Marshal(feed)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -143,20 +154,21 @@ func createTempFile(bytes []byte) (string, error) {
 	return tmpfn, nil
 }
 
-func itemHandler(feed *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
-	log.Debugf("%d new item(s) in %s\n", len(newitems), feed.Url)
+func itemHandler(r *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
+	log.Debugf("%d new item(s) in %s\n", len(newitems), r.Url)
 
 	for i := 0; i < len(newitems) && i < 10; i++ {
 		item := newitems[i]
 		link := item.Links[0]
 		if link != nil && link.Href != "" {
-			article, err := parseArticle(ch.Title, link.Href)
+			item, err := parseFeedItem(feedMap[r.Url], link.Href)
 			if err != nil {
-				log.Errorf("Could not parse article: %v", err)
+				log.Errorf("Could not parse feed item: %v", err)
 			} else {
-				printArticle(article)
-				if article.Title != "" {
-					articles = append(articles, *article)
+				printFeedItem(item)
+				if item.Title != "" {
+					feed.Items[item.Source] = append(feed.Items[item.Source], *item)
+					feed.Full = append(feed.Full, *item)
 				}
 			}
 		}
@@ -164,10 +176,9 @@ func itemHandler(feed *rss.Feed, ch *rss.Channel, newitems []*rss.Item) {
 }
 
 func publishFeed() {
-	log.Debugf("Number of articles: %d", len(articles))
-	sort.Sort(articles)
+	sort.Sort(feed.Full)
 
-	fn, err := encodeFeedJson(articles)
+	fn, err := encodeFeedJson()
 	if err != nil {
 		log.Errorf("Error encoding feed: %v", err)
 		return
@@ -188,9 +199,9 @@ func publishFeed() {
 	log.Debugf("Published to /ipns/%s", ns)
 }
 
-func parseArticle(source, url string) (*Article, error) {
+func parseFeedItem(source, url string) (*FeedItem, error) {
 	opt := &diffbot.Options{Fields: "*"}
-	dArticle, err := diffbot.ParseArticle(token, url, opt)
+	article, err := diffbot.ParseArticle(token, url, opt)
 	if err != nil {
 		if apiErr, ok := err.(*diffbot.Error); ok {
 			// ApiError, e.g. {"error":"Not authorized API token.","errorCode":401}
@@ -201,36 +212,36 @@ func parseArticle(source, url string) (*Article, error) {
 		return nil, err
 	}
 
-	log.Debugf("DIFFBOT ARTICLE: %v", dArticle)
+	log.Debugf("DIFFBOT ARTICLE: %v", article)
 
-	article := &Article{
-		Title:  dArticle.Title,
-		Url:    dArticle.Url,
+	item := &FeedItem{
+		Title:  article.Title,
+		Url:    article.Url,
 		Source: source,
 	}
 
-	t, err := time.Parse(dArticle.Date, timeLayout)
+	t, err := time.Parse(article.Date, timeLayout)
 	if err != nil {
-		article.Date = t
+		item.Date = t
 	}
 
-	if desc := dArticle.Meta["description"]; desc != nil {
-		article.Description = desc.(string)
+	if desc := article.Meta["description"]; desc != nil {
+		item.Description = desc.(string)
 	}
 
-	for _, img := range dArticle.Images {
+	for _, img := range article.Images {
 		if img.Primary == "true" {
-			article.Image = img.Url
+			item.Image = img.Url
 			break
 		}
 	}
-	return article, nil
+	return item, nil
 }
 
-func printArticle(article *Article) {
+func printFeedItem(item *FeedItem) {
 	log.Debugf("URL: %s TITLE: %s TEXT: %s IMAGE: %s",
-		article.Url, article.Title,
-		article.Description, article.Image)
+		item.Url, item.Title,
+		item.Description, item.Image)
 }
 
 func charsetReader(charset string, r io.Reader) (io.Reader, error) {
